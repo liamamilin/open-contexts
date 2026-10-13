@@ -1,5 +1,12 @@
 "Always visible" = "常に表示";
 "Show on hover" = "ホバー時に表示";
+"Off" = "オフ";
+"Top" = "上";
+"Center" = "中央";
+"Vertical alignment" = "縦位置";
+"Sidebar width" = "サイドバーの幅";
+"Show Ungrouped (hidden when empty)" = "未分類を表示（空の場合は非表示）";
+"Show New Group button" = "新規グループボタンを表示";
 "Left" = "左";
 "Right" = "右";
 "Bottom" = "下";
@@ -53,3 +60,7 @@
 "%@ results" = "%@ 件の結果";
 "No matching windows" = "一致するウインドウがありません";
 "Try an app name or window title" = "アプリ名またはタイトルで検索してください";
+"General" = "一般";
+"Features" = "機能";
+"Shortcuts" = "ショートカット";
+"Groups" = "グループ";

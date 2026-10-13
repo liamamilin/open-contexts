@@ -1,5 +1,12 @@
 "Always visible" = "Siempre visible";
 "Show on hover" = "Mostrar al pasar el cursor";
+"Off" = "Desactivada";
+"Top" = "Arriba";
+"Center" = "Centro";
+"Vertical alignment" = "Alineación vertical";
+"Sidebar width" = "Ancho de la barra lateral";
+"Show Ungrouped (hidden when empty)" = "Mostrar Sin grupo (se oculta si está vacío)";
+"Show New Group button" = "Mostrar el botón Nuevo grupo";
 "Left" = "Izquierda";
 "Right" = "Derecha";
 "Bottom" = "Abajo";
@@ -53,3 +60,7 @@
 "%@ results" = "%@ resultados";
 "No matching windows" = "No hay ventanas coincidentes";
 "Try an app name or window title" = "Prueba un nombre de app o título de ventana";
+"General" = "General";
+"Features" = "Funciones";
+"Shortcuts" = "Atajos";
+"Groups" = "Grupos";

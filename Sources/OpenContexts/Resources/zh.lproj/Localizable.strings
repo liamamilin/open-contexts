@@ -1,5 +1,12 @@
 "Always visible" = "始终显示";
 "Show on hover" = "悬浮显示";
+"Off" = "关闭";
+"Top" = "上方";
+"Center" = "居中";
+"Vertical alignment" = "垂直位置";
+"Sidebar width" = "侧边栏宽度";
+"Show Ungrouped (hidden when empty)" = "显示未分组（为空时自动隐藏）";
+"Show New Group button" = "显示新建分组按钮";
 "Left" = "左";
 "Right" = "右";
 "Bottom" = "底部";
@@ -53,3 +60,7 @@
 "%@ results" = "%@ 个结果";
 "No matching windows" = "没有匹配窗口";
 "Try an app name or window title" = "试试应用名或窗口标题";
+"General" = "通用";
+"Features" = "功能";
+"Shortcuts" = "快捷键";
+"Groups" = "分组";
