@@ -12,8 +12,10 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
 
     private let sidebarWidth: CGFloat = 188
     private let edgeWidth: CGFloat = 8
+    private let handleHeight: CGFloat = 16
     private let rootView = NSView()
     private let effect = NSVisualEffectView()
+    private let dragHandle = SidebarDragHandle()
     private let scroll = NSScrollView()
     private let stack = FlippedStackView()
     private let onActivate: (String) -> Void
@@ -26,10 +28,13 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
     private let onCreateGroup: (String) -> Void
     private let onRenameGroup: (String, String) -> Void
     private let onDeleteGroup: (String) -> Void
+    private let onPlacementChange: (SidebarPosition, CGFloat) -> Void
     private let displayScreen: NSScreen
     private var alwaysVisible = false
     private var fullscreen = false
     private var position: SidebarPosition = .right
+    private var placement: CGFloat = 0.5
+    private var panelDrag: (pointer: CGPoint, frame: CGRect, placement: CGFloat)?
     private var itemDisplayMode: SidebarItemDisplayMode = .iconAndTitle
     private var language: AppLanguage = .system
     private var hoverState = SidebarHoverState()
@@ -63,6 +68,7 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
         let position: SidebarPosition
         let itemDisplayMode: SidebarItemDisplayMode
         let language: AppLanguage
+        let placement: CGFloat
     }
 
     private enum SidebarDrop: Equatable {
@@ -77,7 +83,8 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
          onMoveWindow: @escaping WindowMove, onMoveGroup: @escaping GroupMove,
          onCreateGroup: @escaping (String) -> Void,
          onRenameGroup: @escaping (String, String) -> Void,
-         onDeleteGroup: @escaping (String) -> Void) {
+         onDeleteGroup: @escaping (String) -> Void,
+         onPlacementChange: @escaping (SidebarPosition, CGFloat) -> Void = { _, _ in }) {
         self.displayScreen = screen
         self.onActivate = onActivate
         self.canCloseWindow = canCloseWindow
@@ -89,6 +96,7 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
         self.onCreateGroup = onCreateGroup
         self.onRenameGroup = onRenameGroup
         self.onDeleteGroup = onDeleteGroup
+        self.onPlacementChange = onPlacementChange
         super.init(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
                    backing: .buffered, defer: false)
 
@@ -126,13 +134,24 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
         scroll.documentView = stack
 
         rootView.addSubview(effect)
+        dragHandle.translatesAutoresizingMaskIntoConstraints = false
+        dragHandle.onBegin = { [weak self] in self?.beginPanelDrag(at: $0) }
+        dragHandle.onMove = { [weak self] in self?.movePanelDrag(to: $0) }
+        dragHandle.onEnd = { [weak self] in self?.endPanelDrag() }
+        dragHandle.onCenter = { [weak self] in self?.centerPanel() }
+        effect.addSubview(dragHandle)
+        configureDragHandle()
         effect.addSubview(scroll)
         contentView = rootView
         NSLayoutConstraint.activate([
             scroll.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: effect.topAnchor),
-            scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor)
+            scroll.topAnchor.constraint(equalTo: dragHandle.bottomAnchor),
+            scroll.bottomAnchor.constraint(equalTo: effect.bottomAnchor),
+            dragHandle.leadingAnchor.constraint(equalTo: effect.leadingAnchor),
+            dragHandle.trailingAnchor.constraint(equalTo: effect.trailingAnchor),
+            dragHandle.topAnchor.constraint(equalTo: effect.topAnchor),
+            dragHandle.heightAnchor.constraint(equalToConstant: handleHeight)
         ])
         configurePosition()
         layoutPanel()
@@ -157,19 +176,22 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
     func update(groups: [WindowGroup], windowsByGroup: [String: [WindowInfo]],
                 alwaysVisible: Bool, fullscreen: Bool, position: SidebarPosition = .right,
                 itemDisplayMode: SidebarItemDisplayMode = .iconAndTitle,
-                language: AppLanguage = .system) {
+                language: AppLanguage = .system, placement: CGFloat = 0.5) {
         let presentationChanged = self.alwaysVisible != alwaysVisible || self.fullscreen != fullscreen
         self.alwaysVisible = alwaysVisible
         self.fullscreen = fullscreen
-        guard !dragging else {
+        guard !dragging, panelDrag == nil else {
             pendingUpdate = PendingSidebarUpdate(groups: groups, windowsByGroup: windowsByGroup,
                                                  alwaysVisible: alwaysVisible, fullscreen: fullscreen,
                                                  position: position, itemDisplayMode: itemDisplayMode,
-                                                 language: language)
+                                                 language: language, placement: placement)
             layoutPanel()
             return
         }
         self.position = position
+        let nextPlacement = placement.isFinite ? min(1, max(0, placement)) : 0.5
+        let placementChanged = self.placement != nextPlacement
+        self.placement = nextPlacement
         self.itemDisplayMode = itemDisplayMode
         self.language = language
         let positionChanged = renderedPosition != position
@@ -180,10 +202,13 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
             configurePosition()
         }
         if displayModeChanged { renderedItemDisplayMode = itemDisplayMode }
-        if languageChanged { renderedLanguage = language }
+        if languageChanged {
+            renderedLanguage = language
+            configureDragHandle()
+        }
         guard groups != renderedGroups || windowsByGroup != renderedWindows
                 || positionChanged || displayModeChanged || languageChanged else {
-            if presentationChanged {
+            if presentationChanged || placementChanged {
                 if position == .bottom { configureBottomItemWidths() }
                 layoutPanel()
                 layoutDocumentView()
@@ -382,7 +407,7 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
 
     private func layoutPanel() {
         let frames = sidebarFrames()
-        let expanded = hoverState.isExpanded || dragging || (alwaysVisible && !fullscreen)
+        let expanded = hoverState.isExpanded || dragging || panelDrag != nil || (alwaysVisible && !fullscreen)
         let target = expanded ? frames.expanded : frames.edge
         if expanded {
             if !frame.approximatelyEquals(target) { setFrame(target, display: true) }
@@ -398,8 +423,8 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
 
     private func sidebarFrames() -> (edge: NSRect, expanded: NSRect) {
         let area = fullscreen ? displayScreen.frame : displayScreen.visibleFrame
-        let height = min(naturalContentHeight, area.height)
-        let y = area.midY - height / 2
+        let height = min(naturalContentHeight + handleHeight, area.height)
+        let y = area.minY + max(0, area.height - height) * placement
         let expandedWidth = itemDisplayMode == .icon ? CGFloat(44) : sidebarWidth
         switch position {
         case .left:
@@ -414,7 +439,7 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
             )
         case .bottom:
             let width = min(naturalContentWidth, area.width)
-            let x = area.midX - width / 2
+            let x = area.minX + max(0, area.width - width) * placement
             return (
                 NSRect(x: x, y: area.minY, width: width, height: edgeWidth),
                 NSRect(x: x, y: area.minY, width: width, height: height)
@@ -437,9 +462,65 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
     private func updateHover(pointer: CGPoint, now: TimeInterval) {
         let frames = sidebarFrames()
         if hoverState.update(pointer: pointer, edgeFrame: frames.edge, expandedFrame: frames.expanded,
-                             dragging: dragging, now: now) {
+                             dragging: dragging || panelDrag != nil, now: now) {
             layoutPanel()
         }
+    }
+
+    private func configureDragHandle() {
+        let hint = L10n.text("Drag to move the app bar. Double-click to center.", language: language)
+        dragHandle.toolTip = hint
+        dragHandle.setAccessibilityLabel(hint)
+        let menu = NSMenu()
+        let center = NSMenuItem(title: L10n.text("Center app bar", language: language),
+                                action: #selector(centerPanel), keyEquivalent: "")
+        center.target = self
+        menu.addItem(center)
+        dragHandle.menu = menu
+    }
+
+    private func beginPanelDrag(at pointer: CGPoint) {
+        guard !dragging, panelDrag == nil else { return }
+        panelDrag = (pointer, frame, placement)
+        updateHover(pointer: pointer, now: ProcessInfo.processInfo.systemUptime)
+        layoutPanel()
+    }
+
+    private func movePanelDrag(to pointer: CGPoint) {
+        guard let start = panelDrag else { return }
+        let area = fullscreen ? displayScreen.frame : displayScreen.visibleFrame
+        let horizontal = position == .bottom
+        let available = horizontal ? area.width - frame.width : area.height - frame.height
+        // A full-height/full-width bar cannot move. Preserve the saved position for when it shrinks.
+        guard available > 0 else { return }
+        let origin = horizontal
+            ? start.frame.minX + pointer.x - start.pointer.x - area.minX
+            : start.frame.minY + pointer.y - start.pointer.y - area.minY
+        placement = min(1, max(0, origin / available))
+        layoutPanel()
+    }
+
+    private func endPanelDrag() {
+        guard let start = panelDrag else { return }
+        panelDrag = nil
+        let movedPosition = position
+        if placement != start.placement { onPlacementChange(movedPosition, placement) }
+        if let next = pendingUpdate {
+            pendingUpdate = nil
+            update(groups: next.groups, windowsByGroup: next.windowsByGroup,
+                   alwaysVisible: next.alwaysVisible, fullscreen: next.fullscreen,
+                   position: next.position, itemDisplayMode: next.itemDisplayMode,
+                   language: next.language,
+                   placement: next.position == movedPosition ? placement : next.placement)
+        }
+        updateHover(pointer: NSEvent.mouseLocation, now: ProcessInfo.processInfo.systemUptime)
+        layoutPanel()
+    }
+
+    @objc private func centerPanel() {
+        placement = 0.5
+        layoutPanel()
+        onPlacementChange(position, placement)
     }
 
     private func sourceDraggingChanged(_ active: Bool) {
@@ -467,7 +548,7 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
         let next = pendingUpdate ?? PendingSidebarUpdate(
             groups: renderedGroups, windowsByGroup: renderedWindows,
             alwaysVisible: alwaysVisible, fullscreen: fullscreen, position: position,
-            itemDisplayMode: itemDisplayMode, language: language
+            itemDisplayMode: itemDisplayMode, language: language, placement: placement
         )
         self.pendingUpdate = nil
         previewDrop = nil
@@ -477,7 +558,7 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
         update(groups: next.groups, windowsByGroup: next.windowsByGroup,
                alwaysVisible: next.alwaysVisible, fullscreen: next.fullscreen,
                position: next.position, itemDisplayMode: next.itemDisplayMode,
-               language: next.language)
+               language: next.language, placement: next.placement)
     }
 
     private func restorePreviewOrder() {
@@ -885,7 +966,29 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
             }
     }
 
-    fileprivate var smokeNaturalContentHeight: CGFloat { naturalContentHeight }
+    fileprivate var smokeNaturalContentHeight: CGFloat { naturalContentHeight + handleHeight }
+
+    fileprivate func smokeMovePanel(by delta: CGPoint, duringDrag: () -> Void = {}) -> Bool {
+        contentView?.layoutSubtreeIfNeeded()
+        let local = dragHandle.convert(CGPoint(x: dragHandle.bounds.midX, y: dragHandle.bounds.midY), to: nil)
+        let start = convertPoint(toScreen: local)
+        func event(_ type: NSEvent.EventType, at point: CGPoint) -> NSEvent? {
+            NSEvent.mouseEvent(with: type, location: convertPoint(fromScreen: point), modifierFlags: [],
+                               timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: windowNumber,
+                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+        }
+        guard let down = event(.leftMouseDown, at: start) else { return false }
+        dragHandle.mouseDown(with: down)
+        let end = CGPoint(x: start.x + delta.x, y: start.y + delta.y)
+        guard let drag = event(.leftMouseDragged, at: end) else { return false }
+        dragHandle.mouseDragged(with: drag)
+        duringDrag()
+        guard let up = event(.leftMouseUp, at: end) else { return false }
+        dragHandle.mouseUp(with: up)
+        return panelDrag == nil
+    }
+
+    fileprivate func smokeCenterPanel() { centerPanel() }
     fileprivate var smokeRowOrder: [String] {
         sidebarRows.map {
             switch $0.style {
@@ -1001,6 +1104,53 @@ final class SidebarPanel: NSPanel, NSMenuDelegate {
         }
         let itemBounds = stack.arrangedSubviews.reduce(CGRect.null) { $0.union($1.frame) }
         return "position=\(position.rawValue) frame=\(frame) natural=\(naturalContentWidth)x\(naturalContentHeight) clip=\(scroll.contentView.bounds) stack=\(stack.frame) items=\(itemBounds) windows=\(windowWidths.min() ?? -1)...\(windowWidths.max() ?? -1) scrollers=\(scroll.hasHorizontalScroller)/\(scroll.hasVerticalScroller) rows=\(heights) constraints=\(positionConstraints.map(\.isActive)) cross=\(stackCrossAxisConstraint?.isActive == true)"
+    }
+}
+
+@MainActor
+private final class SidebarDragHandle: NSView {
+    var onBegin: (CGPoint) -> Void = { _ in }
+    var onMove: (CGPoint) -> Void = { _ in }
+    var onEnd: () -> Void = {}
+    var onCenter: () -> Void = {}
+    private var moving = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setAccessibilityElement(true)
+        setAccessibilityRole(.group)
+    }
+
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        NSColor.tertiaryLabelColor.setFill()
+        NSBezierPath(roundedRect: NSRect(x: bounds.midX - 12, y: bounds.midY - 1.5,
+                                       width: 24, height: 3), xRadius: 1.5, yRadius: 1.5).fill()
+    }
+
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .openHand) }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount >= 2 { onCenter(); return }
+        guard let window else { return }
+        moving = true
+        onBegin(window.convertPoint(toScreen: event.locationInWindow))
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard moving, let window else { return }
+        NSCursor.closedHand.set()
+        onMove(window.convertPoint(toScreen: event.locationInWindow))
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        guard moving else { return }
+        moving = false
+        onEnd()
+        NSCursor.openHand.set()
     }
 }
 
@@ -1805,6 +1955,7 @@ enum PanelSmokeCheck {
         var windowMoves: [(String, String, String?)] = []
         var groupMoves: [(String, String?)] = []
         var closedWindowIDs: [String] = []
+        var savedPlacements: [(SidebarPosition, CGFloat)] = []
         let sidebar = SidebarPanel(
             screen: screen,
             onActivate: { _ in },
@@ -1816,7 +1967,8 @@ enum PanelSmokeCheck {
             onMoveGroup: { groupMoves.append(($0, $1)) },
             onCreateGroup: { _ in },
             onRenameGroup: { _, _ in },
-            onDeleteGroup: { _ in }
+            onDeleteGroup: { _ in },
+            onPlacementChange: { savedPlacements.append(($0, $1)) }
         )
         sidebar.smokeStopHoverPolling()
         let windows = (0..<200).map {
@@ -1910,7 +2062,7 @@ enum PanelSmokeCheck {
             let insidePoint = CGPoint(x: frames.expanded.midX, y: frames.expanded.midY)
             let outsidePoint = CGPoint(x: frames.expanded.midX, y: frames.expanded.maxY + 40)
             sidebar.smokeUpdateHover(pointer: edgePoint, now: 0)
-            let expandedCrossSize: CGFloat = position == .bottom ? 44 : 188
+            let expandedCrossSize: CGFloat = position == .bottom ? sidebar.smokeNaturalContentHeight : 188
             guard edgeFrame(sidebar.frame, in: area, position: position, width: expandedCrossSize),
                   (position == .bottom || abs(sidebar.frame.height - oneHeight) < 1), !sidebar.smokeIsHidden else {
                 sidebar.close()
@@ -2179,6 +2331,74 @@ enum PanelSmokeCheck {
         }
         sidebar.smokeEndDrag()
 
+        // Moving the bar must preserve window ordering, stay on its edge, and survive refreshes.
+        for position in SidebarPosition.allCases {
+            sidebar.update(groups: groups, windowsByGroup: [GroupStore.ungroupedID: [windows[0]]],
+                           alwaysVisible: true, fullscreen: false, position: position)
+            let original = sidebar.frame
+            let order = sidebar.smokeRowOrder
+            let savedCount = savedPlacements.count
+            let axisDelta: CGFloat = 40
+            guard sidebar.smokeMovePanel(by: CGPoint(x: axisDelta, y: axisDelta)),
+                  sidebar.smokeRowOrder == order, savedPlacements.count == savedCount + 1,
+                  let saved = savedPlacements.last, saved.0 == position,
+                  saved.1 > 0.5, saved.1 <= 1 else {
+                sidebar.close()
+                return fail("sidebar placement drag failed: \(sidebar.smokeLayoutDescription)")
+            }
+            let moved = sidebar.frame
+            let horizontal = position == .bottom
+            guard abs((horizontal ? moved.minX - original.minX : moved.minY - original.minY) - axisDelta) < 1,
+                  horizontal ? moved.minY == area.minY
+                    : (position == .left ? moved.minX == area.minX : moved.maxX == area.maxX) else {
+                sidebar.close()
+                return fail("sidebar moved off its screen edge")
+            }
+            sidebar.update(groups: groups, windowsByGroup: [GroupStore.ungroupedID: [windows[0]]],
+                           alwaysVisible: true, fullscreen: false, position: position, placement: saved.1)
+            guard sidebar.frame.approximatelyEquals(moved),
+                  sidebar.smokeMovePanel(by: CGPoint(x: -10000, y: -10000)),
+                  let low = savedPlacements.last, low.1 == 0,
+                  sidebar.frame.minX >= area.minX, sidebar.frame.minY >= area.minY,
+                  sidebar.smokeMovePanel(by: CGPoint(x: 10000, y: 10000)),
+                  let high = savedPlacements.last, high.1 == 1,
+                  sidebar.frame.maxX <= area.maxX, sidebar.frame.maxY <= area.maxY else {
+                sidebar.close()
+                return fail("sidebar placement refresh or bounds mismatch")
+            }
+            sidebar.smokeCenterPanel()
+            guard sidebar.frame.approximatelyEquals(original), savedPlacements.last?.1 == 0.5 else {
+                sidebar.close()
+                return fail("sidebar did not return to center")
+            }
+        }
+
+        sidebar.update(groups: groups, windowsByGroup: [GroupStore.ungroupedID: [windows[0]]],
+                       alwaysVisible: false, fullscreen: false, position: .right)
+        let centeredFrames = sidebar.smokeSidebarFrames
+        sidebar.smokeUpdateHover(pointer: CGPoint(x: centeredFrames.edge.midX, y: centeredFrames.edge.midY), now: 10)
+        guard sidebar.smokeMovePanel(by: CGPoint(x: 0, y: 40), duringDrag: {
+            sidebar.update(groups: groups, windowsByGroup: [GroupStore.ungroupedID: [windows[0]]],
+                           alwaysVisible: false, fullscreen: false, position: .right)
+        }), let draggedPlacement = savedPlacements.last?.1, draggedPlacement > 0.5 else {
+            sidebar.close()
+            return fail("sidebar refresh interrupted placement drag")
+        }
+        let movedFrames = sidebar.smokeSidebarFrames
+        guard movedFrames.edge.minY == movedFrames.expanded.minY,
+              movedFrames.edge.minY > centeredFrames.edge.minY else {
+            sidebar.close()
+            return fail("sidebar hover target did not follow placement")
+        }
+        let away = CGPoint(x: area.minX - 100, y: area.minY - 100)
+        sidebar.smokeUpdateHover(pointer: away, now: 20)
+        sidebar.smokeUpdateHover(pointer: away, now: 21)
+        sidebar.smokeUpdateHover(pointer: CGPoint(x: movedFrames.edge.midX, y: movedFrames.edge.midY), now: 22)
+        guard !sidebar.smokeIsHidden, sidebar.frame.approximatelyEquals(movedFrames.expanded) else {
+            sidebar.close()
+            return fail("sidebar did not reopen at moved placement")
+        }
+
         let switcherWindows = windows
         let switcherResults = WindowSearch.filter(switcherWindows, query: "")
         var selectedIDs: [String] = []
@@ -2255,6 +2475,7 @@ enum PanelSmokeCheck {
         switcher.hideSwitcher()
         switcher.close()
         sidebar.close()
+        if valid { print("Open Contexts panel self-check passed") }
         return valid ? true : fail("switcher layout mismatch: \(switcher.smokeLayoutDescription)")
     }
 

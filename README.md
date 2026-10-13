@@ -20,7 +20,7 @@ Actual screenshots of the macOS app.
 
 <img src="docs/screenshots/sidebar-left.png" alt="Open Contexts sidebar listing Mac windows in custom groups" width="188">
 
-The left and right sidebars are centered along the edge of the screen.
+The left and right sidebars start centered along the screen edge. Drag the small handle at the top to move the bar up or down; its position is saved separately for each screen and edge. Double-click the handle to center it again.
 
 ### Bottom bar
 
@@ -96,6 +96,7 @@ xattr -dr com.apple.quarantine "/Applications/OpenContexts.app"
 - Right-click a group title: Rename or delete the group.
 - Drag a window to move it into a group or change its order; drag a group title to reorder groups.
 - Menu bar settings: Place the sidebar on the left, right, or bottom, and choose whether it is always visible or shown when the pointer approaches the screen edge.
+- App bar position: Drag the top handle along the screen edge (up/down at the sides, left/right at the bottom). Double-click it or right-click and choose “Center app bar” to reset this bar; the settings button centers all bars.
 - Display options: Show app icons only, or icons and window titles. If the bottom bar runs out of space, it shrinks window items evenly so all windows stay on one line without scrolling.
 
 When testing, first quit other tools that take over `⌘Tab` to avoid global shortcut conflicts.

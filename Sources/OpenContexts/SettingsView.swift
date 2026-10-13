@@ -42,6 +42,7 @@ final class AppSettings: ObservableObject {
     @Published private(set) var sidebarMode: SidebarVisibilityMode
     @Published private(set) var sidebarPosition: SidebarPosition
     @Published private(set) var sidebarItemDisplayMode: SidebarItemDisplayMode
+    @Published private(set) var sidebarPlacements: [String: Double]
     @Published private(set) var language: AppLanguage
     @Published private(set) var allWindowsShortcut: KeyboardShortcut
     @Published private(set) var currentAppShortcut: KeyboardShortcut
@@ -66,6 +67,12 @@ final class AppSettings: ObservableObject {
         sidebarItemDisplayMode = SidebarItemDisplayMode(
             rawValue: defaults.string(forKey: "sidebarItemDisplayMode") ?? ""
         ) ?? .iconAndTitle
+        sidebarPlacements = (defaults.dictionary(forKey: "sidebarPlacements") ?? [:])
+            .reduce(into: [:]) { result, entry in
+                if let value = entry.value as? NSNumber, value.doubleValue.isFinite {
+                    result[entry.key] = min(1, max(0, value.doubleValue))
+                }
+            }
         let savedPosition = defaults.string(forKey: "sidebarPosition")
         if let savedPosition, let position = SidebarPosition(rawValue: savedPosition) {
             sidebarPosition = position
@@ -88,6 +95,25 @@ final class AppSettings: ObservableObject {
     func setSidebarItemDisplayMode(_ mode: SidebarItemDisplayMode) {
         sidebarItemDisplayMode = mode
         defaults.set(mode.rawValue, forKey: "sidebarItemDisplayMode")
+    }
+
+    func sidebarPlacement(screenID: String, position: SidebarPosition) -> CGFloat {
+        CGFloat(sidebarPlacements["\(screenID):\(position.rawValue)"] ?? 0.5)
+    }
+
+    func setSidebarPlacement(_ placement: CGFloat, screenID: String, position: SidebarPosition) {
+        guard placement.isFinite else { return }
+        let value = min(1, max(0, Double(placement)))
+        let key = "\(screenID):\(position.rawValue)"
+        guard (sidebarPlacements[key] ?? 0.5) != value else { return }
+        if value == 0.5 { sidebarPlacements.removeValue(forKey: key) }
+        else { sidebarPlacements[key] = value }
+        defaults.set(sidebarPlacements, forKey: "sidebarPlacements")
+    }
+
+    func centerSidebars() {
+        sidebarPlacements = [:]
+        defaults.removeObject(forKey: "sidebarPlacements")
     }
 
     func setLanguage(_ language: AppLanguage) {
@@ -155,6 +181,18 @@ final class AppSettings: ObservableObject {
         defaults.set(Data("invalid".utf8), forKey: "allWindowsShortcut")
         guard AppSettings(defaults: defaults).allWindowsShortcut == .allWindows else { return false }
         settings.resetShortcuts()
+        settings.setSidebarPlacement(0.8, screenID: "display-a", position: .right)
+        settings.setSidebarPlacement(0.2, screenID: "display-b", position: .right)
+        let placements = AppSettings(defaults: defaults)
+        guard abs(placements.sidebarPlacement(screenID: "display-a", position: .right) - 0.8) < 0.001,
+              abs(placements.sidebarPlacement(screenID: "display-b", position: .right) - 0.2) < 0.001,
+              placements.sidebarPlacement(screenID: "display-a", position: .left) == 0.5 else { return false }
+        settings.setSidebarPlacement(2, screenID: "display-a", position: .right)
+        settings.setSidebarPlacement(.nan, screenID: "display-a", position: .right)
+        guard settings.sidebarPlacement(screenID: "display-a", position: .right) == 1 else { return false }
+        settings.centerSidebars()
+        guard AppSettings(defaults: defaults).sidebarPlacements.isEmpty,
+              defaults.object(forKey: "sidebarPlacements") == nil else { return false }
         return AppSettings(defaults: defaults).allWindowsShortcut == .allWindows
             && AppSettings(defaults: defaults).currentAppShortcut == .currentApp
             && settings.sidebarPosition == .left
@@ -201,6 +239,10 @@ struct SettingsView: View {
                 }
             }
             .pickerStyle(.segmented)
+
+            Button(L10n.text("Center app bar", language: language)) {
+                settings.centerSidebars()
+            }
 
             Picker(L10n.text("Language", language: language), selection: Binding(
                 get: { settings.language },
